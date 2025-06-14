@@ -1,0 +1,208 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.metrics import peak_signal_noise_ratio as psnr, structural_similarity as ssim
+from scipy.fft import fft2, fftshift
+from scipy import signal
+from tkinter import Tk, filedialog, messagebox, ttk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import tkinter as tk
+
+class ImageAnalysisApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Анализ качества изображения")
+        self.image = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Панель загрузки
+        self.load_frame = ttk.LabelFrame(self.root, text="Загрузка изображения")
+        self.load_frame.pack(pady=10, padx=10, fill="x")
+        
+        ttk.Button(self.load_frame, text="Выбрать изображение", command=self.load_image).pack(pady=5)
+
+        # Параметры анализа
+        self.params_frame = ttk.LabelFrame(self.root, text="Параметры анализа")
+        self.params_frame.pack(pady=10, padx=10, fill="x")
+
+        params = [
+            ("Физическая ширина (мм)", "50"),
+            ("Физическая высота (мм)", "50"),
+            ("Коэффициент уменьшения", "4"),
+            ("Битность квантования", "2")
+        ]
+        
+        self.entries = {}
+        for i, (text, default) in enumerate(params):
+            ttk.Label(self.params_frame, text=text).grid(row=i, column=0, padx=5, pady=2, sticky="e")
+            entry = ttk.Entry(self.params_frame)
+            entry.grid(row=i, column=1, padx=5, pady=2)
+            entry.insert(0, default)
+            self.entries[text.split()[0].lower()] = entry
+
+        ttk.Button(self.root, text="Анализировать", command=self.analyze_image).pack(pady=10)
+
+        # Результаты
+        self.result_frame = ttk.LabelFrame(self.root, text="Результаты анализа")
+        self.result_frame.pack(pady=10, padx=10, fill="both", expand=True)
+        
+        self.notebook = ttk.Notebook(self.result_frame)
+        self.notebook.pack(fill="both", expand=True)
+        
+        # Вкладки для разных анализов
+        self.tabs = {
+            "Основные": ttk.Frame(self.notebook),
+            "ПЧХ": ttk.Frame(self.notebook),
+            "Резкость": ttk.Frame(self.notebook),
+            "Разрешение": ttk.Frame(self.notebook)
+        }
+        
+        for name, tab in self.tabs.items():
+            self.notebook.add(tab, text=name)
+            if name == "Основные":
+                self.setup_main_tab(tab)
+            else:
+                self.setup_analysis_tab(tab)
+
+    def setup_main_tab(self, tab):
+        self.text_output = tk.Text(tab, wrap=tk.WORD)
+        self.text_output.pack(side=tk.LEFT, fill="both", expand=True)
+        
+        scroll = ttk.Scrollbar(tab, command=self.text_output.yview)
+        scroll.pack(side=tk.RIGHT, fill="y")
+        self.text_output.config(yscrollcommand=scroll.set)
+
+    def setup_analysis_tab(self, tab):
+        fig = plt.Figure(figsize=(6, 4))
+        canvas = FigureCanvasTkAgg(fig, master=tab)
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        setattr(self, f"fig_{tab.winfo_name()[-1]}", fig)
+
+    def load_image(self):
+        path = filedialog.askopenfilename(filetypes=[("Изображения", "*.jpg;*.png;*.bmp")])
+        if path:
+            self.image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if self.image is not None:
+                messagebox.showinfo("Успех", "Изображение загружено")
+            else:
+                messagebox.showerror("Ошибка", "Не удалось загрузить изображение")
+
+    def analyze_image(self):
+        if self.image is None:
+            messagebox.showerror("Ошибка", "Сначала загрузите изображение")
+            return
+
+        try:
+            # Получаем параметры
+            params = {k: float(v.get()) for k, v in self.entries.items()}
+            
+            # Основные преобразования
+            h, w = self.image.shape
+            downscale_factor = int(params['коэффициент'])
+            downscaled = cv2.resize(self.image, 
+                                  (w//downscale_factor, h//downscale_factor), 
+                                  interpolation=cv2.INTER_AREA)
+            
+            # Приводим изображения к одному размеру для сравнения
+            downscaled_resized = cv2.resize(downscaled, (w, h), interpolation=cv2.INTER_NEAREST)
+            
+            # Анализ качества
+            results = self.analyze_quality(self.image, downscaled_resized, params)
+            
+            # Вывод результатов
+            self.display_results(results)
+            
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка анализа: {str(e)}")
+
+    def analyze_quality(self, original, processed, params):
+        results = {}
+        
+        # 1. Пространственная частотная характеристика (ПЧХ)
+        results['mtf'] = self.calculate_mtf(original)
+        
+        # 2. Резкость (через градиент)
+        results['sharpness'] = self.calculate_sharpness(original)
+        
+        # 3. Разрешающая способность (через FFT)
+        results['resolution'] = self.calculate_resolution(original)
+        
+        # 4. Искажения от дискретизации
+        results['artifacts'] = self.calculate_artifacts(original, processed)
+        
+        # Основные метрики
+        results['basic'] = {
+            'psnr': psnr(original, processed),
+            'ssim': ssim(original, processed, data_range=processed.max()-processed.min()),
+            'size_original': original.shape,
+            'size_processed': processed.shape
+        }
+        
+        return results
+
+    def calculate_mtf(self, image):
+        # Используем метод краевого контраста
+        edge = image[:, image.shape[1]//2]  # Вертикальный срез через центр
+        mtf = np.abs(np.fft.fft(edge - np.mean(edge)))
+        return mtf[:len(mtf)//2]  # Только положительные частоты
+
+    def calculate_sharpness(self, image):
+        # Метод Лапласиана
+        laplacian = cv2.Laplacian(image, cv2.CV_64F)
+        return np.var(laplacian)
+
+    def calculate_resolution(self, image):
+        # Анализ спектра Фурье
+        fft = np.log(np.abs(fftshift(fft2(image))) + 1)
+        return fft
+
+    def calculate_artifacts(self, original, processed):
+        # Разница между изображениями
+        diff = cv2.absdiff(original, processed)
+        return np.mean(diff)
+
+    def display_results(self, results):
+        # Очищаем предыдущие результаты
+        self.text_output.delete(1.0, tk.END)
+        
+        # Основные метрики
+        basic = results['basic']
+        text = f"""=== ОСНОВНЫЕ ПАРАМЕТРЫ ===
+Размер оригинала: {basic['size_original']}
+Размер после обработки: {basic['size_processed']}
+PSNR: {basic['psnr']:.2f} dB
+SSIM: {basic['ssim']:.4f}
+
+=== КАЧЕСТВО ИЗОБРАЖЕНИЯ ===
+Резкость (метод Лапласиана): {results['sharpness']:.2f}
+Уровень артефактов: {results['artifacts']:.2f}
+"""
+        self.text_output.insert(tk.END, text)
+        
+        # Графики
+        self.plot_mtf(results['mtf'])
+        self.plot_resolution(results['resolution'])
+        
+    def plot_mtf(self, mtf):
+        fig = self.fig_1
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.plot(mtf)
+        ax.set_title("Пространственная частотная характеристика (ПЧХ)")
+        ax.set_xlabel("Пространственная частота")
+        ax.set_ylabel("Контраст")
+        fig.canvas.draw()
+
+    def plot_resolution(self, fft):
+        fig = self.fig_3
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.imshow(fft, cmap='gray')
+        ax.set_title("Спектр Фурье (оценка разрешения)")
+        fig.canvas.draw()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ImageAnalysisApp(root)
+    root.mainloop()

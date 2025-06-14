@@ -1,0 +1,132 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def calculate_discrete_illumination(l_ap, l_sh, a, b, E1, E2, matrix_size=20):
+    """
+    Рассчитывает дискретные значения освещенности для матрицы фотодиодов
+    с учетом размытого края между a и b.
+
+    Параметры:
+    l_ap - ширина апертуры фотодиода (в мкм)
+    l_sh - шаг дискретизации (расстояние между центрами фотодиодов, в мкм)
+    a - начало размытия (в мкм)
+    b - конец размытия (в мкм)
+    E1 - освещенность до точки a (в %)
+    E2 - освещенность после точки b (в %)
+    matrix_size - размер матрицы (в пикселях)
+
+    Возвращает:
+    Матрицу освещенности и координаты центров фотодиодов
+    """
+    # Проверка корректности параметров
+    if l_ap > l_sh:
+        raise ValueError("Ширина апертуры не может быть больше шага дискретизации")
+    if a >= b:
+        raise ValueError("Точка a должна быть меньше точки b")
+    if b > (matrix_size - 1) * l_sh:
+        raise ValueError(f"Точка b выходит за пределы матрицы (максимум {(matrix_size - 1) * l_sh} мкм)")
+
+    # Вычисляем номера пикселей, на которые попадают точки a и b
+    n_a = int((a + l_sh / 2) // l_sh)
+    n_b = int((b + l_sh / 2) // l_sh)
+
+    # Координаты центров фотодиодов
+    centers = np.arange(0, matrix_size) * l_sh
+
+    # Матрица освещенности
+    E_matrix = np.zeros((matrix_size, matrix_size))
+
+    for n in range(matrix_size):
+        # Координаты границ текущего фотодиода
+        left = centers[n] - l_ap / 2
+        right = centers[n] + l_ap / 2
+
+        if right <= a:
+            # Полностью в области E1
+            E_matrix[n, :] = E1
+        elif left >= b:
+            # Полностью в области E2
+            E_matrix[n, :] = E2
+        else:
+            # Частично или полностью в области размытия
+            # Определяем границы интегрирования
+            x1 = max(left, a)
+            x2 = min(right, b)
+
+            if x1 >= x2:
+                # Фотодиод полностью в одной из областей
+                if right <= a:
+                    E_matrix[n, :] = E1
+                elif left >= b:
+                    E_matrix[n, :] = E2
+                else:
+                    # Это не должно происходить при корректных x1, x2
+                    pass
+            else:
+                # Вычисляем интеграл линейной функции на участке [x1, x2]
+                # E(x) = E1 + (E2 - E1)*(x - a)/(b - a)
+                # Интеграл от E(x) по dx от x1 до x2:
+                integral = E1 * (x2 - x1) + (E2 - E1) / (b - a) * ((x2 ** 2 - x1 ** 2) / 2 - a * (x2 - x1))
+
+                # Освещенность - среднее значение по апертуре
+                E_value = integral / (right - left)
+
+                # Если фотодиод частично в E1 и частично в размытии
+                if left < a:
+                    integral_E1 = E1 * (a - left)
+                    E_value = (integral_E1 + integral) / l_ap
+
+                # Если фотодиод частично в размытии и частично в E2
+                if right > b:
+                    integral_E2 = E2 * (right - b)
+                    E_value = (integral + integral_E2) / l_ap
+
+                E_matrix[n, :] = E_value
+
+    return E_matrix, centers
+
+
+# Параметры примера
+l_ap = 8  # мкм
+l_sh = 10  # мкм
+a = 70  # мкм
+b = 110  # мкм
+E1 = 20  # %
+E2 = 80  # %
+matrix_size = 20  # 20x20 пикселей
+
+# Расчет освещенности
+E_matrix, centers = calculate_discrete_illumination(l_ap, l_sh, a, b, E1, E2, matrix_size)
+
+# Визуализация
+plt.figure(figsize=(12, 6))
+plt.suptitle(
+        f'Пример 2 \n Дискретизация освещенности:\nl_ap={l_ap} мкм, l_sh={l_sh} мкм, a={a} мкм, b={b} мкм, E1={E1}%, E2={E2}%')
+
+# 1. Графическое представление матрицы
+plt.subplot(1, 2, 1)
+plt.imshow(E_matrix, cmap='gray', vmin=0, vmax=100, extent=[0, matrix_size, matrix_size, 0])
+plt.colorbar(label='Освещенность (%)')
+plt.title('Графическое представление освещенности')
+plt.xlabel('Пиксели по горизонтали (n)')
+plt.ylabel('Пиксели по вертикали (m)')
+
+# 2. Таблица значений
+plt.subplot(1, 2, 2)
+plt.axis('off')
+table_data = np.round(E_matrix, 1)
+
+# Создаем метки, начинающиеся с 1
+row_labels = [str(i+1) for i in range(matrix_size)]
+col_labels = [str(i+1) for i in range(matrix_size)]
+
+table = plt.table(cellText=table_data, loc='center', cellLoc='center',
+                 colLabels=col_labels, rowLabels=row_labels)
+table.auto_set_font_size(False)
+table.set_fontsize(8)
+table.scale(1, 1.2)
+plt.title('Таблица значений освещенности (%)')
+
+plt.tight_layout()
+plt.show()
